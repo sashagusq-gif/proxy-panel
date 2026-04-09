@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Proxy Admin Panel</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/static/styles.css?v=10" />
+  </head>
+  <body>
+    <div id="loginOverlay" class="overlay">
+      <div class="login-card">
+        <div class="login-brand">
+          <span class="login-logo" aria-hidden="true"></span>
+          <div>
+            <h1>Вход</h1>
+            <p class="login-sub">Админ-панель прокси</p>
+          </div>
+        </div>
+        <p class="login-lead">Введите учётные данные администратора.</p>
+        <form id="loginForm" class="login-form">
+          <label class="field">
+            <span class="field-label">Логин</span>
+            <input name="username" required autocomplete="username" />
+          </label>
+          <label class="field">
+            <span class="field-label">Пароль</span>
+            <input name="password" type="password" required autocomplete="current-password" />
+          </label>
+          <button type="submit" class="btn btn-primary btn-block">Войти</button>
+        </form>
+        <p id="loginStatus" class="login-status" role="status"></p>
+      </div>
+    </div>
+
+    <main class="container hidden" id="appContainer">
+      <header class="topbar">
+        <div class="topbar-main">
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <div>
+              <h1 class="brand-title">Proxy Admin</h1>
+              <p class="brand-sub">Управление пользователями и цепочкой VLESS</p>
+            </div>
+          </div>
+          <div class="endpoint-row" aria-label="Порты и хост">
+            <span class="endpoint-chip" title="HTTP-прокси">HTTP <strong id="httpPortLabel">13128</strong></span>
+            <span class="endpoint-chip" title="SOCKS5">SOCKS <strong id="socksPortLabel">11080</strong></span>
+            <span class="endpoint-chip" title="MTProto">MTProto <strong id="mtprotoPortLabel">2053</strong></span>
+            <span class="endpoint-chip endpoint-chip-wide" title="Telegram SOCKS5"
+              >TG <code id="tgHostLabel">—</code></span
+            >
+            <span id="vlessBadge" class="status-pill ok hidden" title="">VLESS</span>
+          </div>
+        </div>
+        <button id="logoutBtn" type="button" class="btn btn-ghost">Выйти</button>
+      </header>
+
+      <div class="tab-bar" role="tablist" aria-label="Разделы панели">
+        <button id="usersTabBtn" type="button" class="tab tab-active" role="tab" aria-selected="true">
+          Пользователи
+        </button>
+        <button id="analyticsTabBtn" type="button" class="tab" role="tab" aria-selected="false">Графики</button>
+      </div>
+
+      <section class="card" id="usersSection">
+        <div class="card-head">
+          <h2 class="card-title">Новый пользователь</h2>
+          <p class="card-desc">Логин, пароль и типы доступа</p>
+        </div>
+        <div class="card-body">
+        <form id="createUserForm" class="create-form">
+          <label class="field">
+            <span class="field-label">Имя пользователя</span>
+            <input name="username" required minlength="3" maxlength="64" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">Пароль <span class="field-hint">пусто — сгенерировать</span></span>
+            <input name="password" type="text" maxlength="128" placeholder="20 символов" autocomplete="off" />
+          </label>
+          <div class="proto-toggles" role="group" aria-label="Протоколы">
+            <label class="check-tile"><input type="checkbox" name="allow_http" checked /> <span>HTTP</span></label>
+            <label class="check-tile"><input type="checkbox" name="allow_socks5" checked /> <span>SOCKS5</span></label>
+            <label class="check-tile"><input type="checkbox" name="allow_mtproto" /> <span>MTProto</span></label>
+          </div>
+          <div class="row row-wrap">
+            <label class="field">
+              <span class="field-label">Действует до <span class="field-hint">необяз.</span></span>
+              <input name="expires_at" type="datetime-local" />
+            </label>
+            <label class="field">
+              <span class="field-label">Лимит, ГБ <span class="field-hint">необяз.</span></span>
+              <input name="traffic_limit_gb" type="number" min="0" step="0.01" placeholder="Без лимита" />
+            </label>
+          </div>
+          <button type="submit" class="btn btn-primary">Создать пользователя</button>
+        </form>
+        </div>
+      </section>
+
+      <section class="card card-vless" id="vlessSection">
+        <div class="card-head">
+          <h2 class="card-title">VLESS</h2>
+          <p class="card-desc">Цепочка для HTTP, SOCKS5 и MTProto через sing-box</p>
+        </div>
+        <div class="card-body">
+        <details class="help-details">
+          <summary>Справка и диагностика</summary>
+          <div class="help-details-body">
+            <p>
+              Если узел VLESS отвечает, трафик 3proxy (HTTP/SOCKS) и MTProto (mtg) идёт в sing-box по SOCKS5, затем в VLESS; если нет — цепочка не включается и клиенты выходят в интернет напрямую.
+            </p>
+            <p>
+              <strong>Sing-box не перечитывает JSON сам:</strong> после сохранения ссылки нужен
+              <code>docker compose restart sing-box</code>, иначе процесс может работать по старому конфигу (например direct), а проверка SOCKS всё равно будет «успешной».
+            </p>
+            <p>
+              Без <code>flow</code> — обычный VLESS (как в большинстве REALITY-ссылок). Если не коннектится — попробуйте
+              <code>flow=xtls-rprx-vision</code> или в ссылке указать <code>alpn=http/1.1</code> (или <code>h2</code>), как в вашей панели Xray.
+            </p>
+            <p>
+              Диагностика: <code>docker compose logs sing-box</code>; подробные логи: в <code>.env</code> —
+              <code>SINGBOX_LOG_LEVEL=info</code> и пересоздайте backend.
+            </p>
+          </div>
+        </details>
+        <form id="vlessForm" class="create-form create-form-wide">
+          <label class="check-row">
+            <input type="checkbox" name="vless_enabled" id="vlessEnabled" />
+            <span>Включить цепочку через VLESS</span>
+          </label>
+          <label class="field">
+            <span class="field-label">Ссылка <code>vless://</code></span>
+            <input
+              name="vless_link"
+              id="vlessLinkInput"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="vless://uuid@host:443?..."
+            />
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+            <button type="button" id="vlessRestartDoneBtn" class="btn btn-secondary hidden">
+              Готово: sing-box перезапущен
+            </button>
+          </div>
+        </form>
+        <p id="vlessFormHint" class="hint callout callout-neutral is-empty" role="status"></p>
+        </div>
+      </section>
+
+      <section class="card" id="usersTableSection">
+        <div class="actions">
+          <div>
+            <h2 class="card-title tight">Пользователи</h2>
+            <p class="card-desc tight">Список, трафик и действия</p>
+          </div>
+          <div class="actions-right">
+            <div class="menu-wrap">
+              <button id="archiveMenuBtn" type="button" class="btn btn-secondary">Архив данных</button>
+              <div id="archiveMenu" class="menu hidden">
+                <button id="importTemplateBtn" class="menu-item-btn">Шаблон импорта (CSV)</button>
+                <label class="menu-item-label">
+                  Импорт пользователей (CSV)
+                  <input id="importUsersInput" type="file" accept=".csv,text/csv,text/plain" />
+                </label>
+                <button id="reportUsersBtn" class="menu-item-btn">Отчёт по пользователям (CSV)</button>
+                <button id="reportLinksBtn" class="menu-item-btn">Отчёт CSV со ссылками (HTTP, Telegram)</button>
+                <button id="backupBtn" class="menu-item-btn">Скачать backup</button>
+                <label class="menu-item-label">
+                  Восстановить из файла (SQLite .db или legacy JSON)
+                  <input
+                    id="restoreInput"
+                    type="file"
+                    accept=".db,.sqlite,application/x-sqlite3,.json,application/json"
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Username</th>
+                <th>HTTP</th>
+                <th>SOCKS5</th>
+                <th>MTProto</th>
+                <th>Входящий</th>
+                <th>Исходящий</th>
+                <th>Всего</th>
+                <th>Запросов</th>
+                <th>До</th>
+                <th>Лимит</th>
+                <th>Статус</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="usersTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card hidden" id="analyticsSection">
+        <div class="actions actions-analytics">
+          <div>
+            <h2 class="card-title tight">Утилизация трафика</h2>
+            <p class="card-desc tight">Скорость по выборкам за период</p>
+          </div>
+          <div class="actions-right">
+            <select id="chartUserSelect" class="input-small" aria-label="Пользователь"></select>
+            <select id="chartRangeSelect" class="input-small" aria-label="Интервал">
+              <option value="60">1 час</option>
+              <option value="180" selected>3 часа</option>
+              <option value="360">6 часов</option>
+              <option value="1440">24 часа</option>
+            </select>
+            <button id="chartRefreshBtn" type="button" class="btn btn-secondary">Обновить</button>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="trafficChart"></canvas>
+        </div>
+        <div class="chart-stats">
+          <div class="stat-chip" id="statIn">IN min/max/avg: —</div>
+          <div class="stat-chip" id="statOut">OUT min/max/avg: —</div>
+          <div class="stat-chip" id="statTotal">TOTAL min/max/avg: —</div>
+        </div>
+      </section>
+
+      <div id="status" class="status-bar" role="status"></div>
+    </main>
+
+    <div id="limitsModal" class="modal hidden" style="display: none" aria-modal="true" role="dialog">
+      <div class="modal-card">
+        <h3 class="modal-title">Срок и лимит</h3>
+        <p class="hint modal-lead">
+          Пустое поле даты или лимита — без ограничения. Лимит по сумме вход + исход.
+        </p>
+        <form id="limitsForm" class="create-form">
+          <input type="hidden" name="user_id" id="limitsUserId" />
+          <label class="field">
+            <span class="field-label">Действует до</span>
+            <input name="expires_at" type="datetime-local" id="limitsExpiresInput" />
+          </label>
+          <label class="field">
+            <span class="field-label">Лимит, ГБ</span>
+            <input name="traffic_limit_gb" type="number" min="0" step="0.01" placeholder="Без лимита" id="limitsGbInput" />
+          </label>
+          <div class="modal-actions">
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+            <button type="button" class="btn btn-ghost" id="closeLimitsBtn">Отмена</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="httpCredsModal" class="modal hidden" style="display: none" aria-modal="true" role="dialog">
+      <div class="modal-card">
+        <h3 class="modal-title">HTTP-прокси</h3>
+        <p class="hint modal-lead">Данные для подключения клиента.</p>
+        <div class="kv">
+          <span>Логин</span>
+          <code id="httpUserValue">-</code>
+        </div>
+        <div class="kv">
+          <span>Пароль</span>
+          <code id="httpPassValue">-</code>
+        </div>
+        <div class="kv">
+          <span>URL</span>
+          <code id="httpUrlValue">-</code>
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="copyHttpCredsBtn" class="btn btn-copy">Копировать всё</button>
+          <button type="button" id="closeHttpCredsBtn" class="btn btn-ghost">Закрыть</button>
+        </div>
+      </div>
+    </div>
+    <script src="/static/app.js?v=16"></script>
+  </body>
+</html>

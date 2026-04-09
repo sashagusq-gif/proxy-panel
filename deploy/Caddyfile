@@ -1,0 +1,4 @@
+proxy.brathe.cc {
+  encode gzip
+  reverse_proxy backend:8000
+}
