@@ -7,6 +7,7 @@ import string
 import tempfile
 import threading
 import time
+import re
 import hmac
 import hashlib
 import base64
@@ -1173,9 +1174,7 @@ def _row_to_user_create(cols: dict[str, int], row: list[str]) -> UserCreate:
             return ""
         return row[j].strip()
 
-    username = cell("username")
-    if not username:
-        raise ValueError("username is required")
+    username = _normalize_import_username(cell("username"))
 
     pw_raw = cell("password")
     password: str | None = pw_raw if pw_raw else None
@@ -1201,6 +1200,46 @@ def _row_to_user_create(cols: dict[str, int], row: list[str]) -> UserCreate:
         expires_at=expires_at,
         traffic_limit_bytes=traffic_limit_bytes,
     )
+
+
+def _normalize_import_username(raw: str) -> str:
+    """
+    Нормализация логина только для CSV-импорта:
+    - пробелы -> "_"
+    - запрещённые в 3proxy/валидации символы ":" и "|" -> "_"
+    - повторные "_" схлопываются
+    """
+    s = (raw or "").strip()
+    if not s:
+        raise ValueError("username is required")
+    s = re.sub(r"\s+", "_", s)
+    s = s.replace(":", "_").replace("|", "_")
+    s = re.sub(r"_+", "_", s)
+    if len(s) > 64:
+        s = s[:64]
+    if len(s) < 3:
+        raise ValueError("username is too short after normalization")
+    return s
+
+
+def _make_unique_import_username(base: str, taken: set[str]) -> str:
+    """
+    Делает username уникальным относительно уже занятых (БД + текущий импорт).
+    Формат: base, base_2, base_3, ...
+    """
+    candidate = base
+    if candidate not in taken:
+        taken.add(candidate)
+        return candidate
+    i = 2
+    while True:
+        suffix = f"_{i}"
+        root = base[: max(1, 64 - len(suffix))]
+        candidate = f"{root}{suffix}"
+        if candidate not in taken:
+            taken.add(candidate)
+            return candidate
+        i += 1
 
 
 def _now_ts() -> int:
@@ -1676,12 +1715,18 @@ async def import_users_csv(
 
     results: list[ImportUserResult] = []
     errors: list[ImportRowError] = []
+    taken_usernames = {
+        u for u in db.scalars(select(ProxyUser.username)).all() if isinstance(u, str) and u
+    }
 
     for i, row in enumerate(data_rows, start=2):
         if not row or not any((c or "").strip() for c in row):
             continue
         try:
             payload = _row_to_user_create(col_map, row)
+            normalized_username = _normalize_import_username(payload.username)
+            unique_username = _make_unique_import_username(normalized_username, taken_usernames)
+            payload = payload.model_copy(update={"username": unique_username})
             user, password_generated = _prepare_user_row_for_create(payload, db)
         except ValueError as e:
             errors.append(ImportRowError(row=i, detail=str(e)))
