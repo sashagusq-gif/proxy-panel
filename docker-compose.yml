@@ -47,6 +47,7 @@ services:
       VLESS_CHAIN_PROBE_PORT: ${VLESS_CHAIN_PROBE_PORT:-443}
     volumes:
       - ${PANEL_DATA_HOST_PATH:-./data}:/data
+      - /var/run/docker.sock:/var/run/docker.sock
       - proxy_conf:/opt/proxy/conf
       - proxy_logs:/opt/proxy/logs
       - mtproto_conf:/opt/mtproto

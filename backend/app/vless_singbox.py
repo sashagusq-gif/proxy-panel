@@ -14,7 +14,7 @@ def _flatten_params(qs: dict[str, list[str]]) -> dict[str, str]:
     out: dict[str, str] = {}
     for k, vals in qs.items():
         if vals:
-            out[k.lower()] = vals[0]
+            out[k.lower()] = unquote(vals[0]).strip()
     return out
 
 
@@ -36,8 +36,15 @@ def parse_vless_url(raw: str) -> dict[str, Any]:
     if not u.hostname:
         raise ValueError("Не указан хост")
     uuid = _normalize_uuid(unquote(u.username or ""))
-    port = u.port or 443
+    try:
+        port = u.port or 443
+    except ValueError as e:
+        raise ValueError("Неверный порт в ссылке VLESS") from e
+    if port < 1 or port > 65535:
+        raise ValueError("Порт должен быть в диапазоне 1..65535")
     server = u.hostname.strip("[]")
+    if not server:
+        raise ValueError("Не указан хост")
     params = _flatten_params(parse_qs(u.query))
     fragment = unquote(u.fragment) if u.fragment else ""
     return {
@@ -64,6 +71,29 @@ def _is_ip(host: str) -> bool:
 
 def _singbox_log_level() -> str:
     return (os.environ.get("SINGBOX_LOG_LEVEL") or "warn").strip().lower()
+
+
+def _normalize_network(raw: str) -> str:
+    s = (raw or "tcp").strip().lower()
+    aliases = {
+        "h2": "http",
+        "http2": "http",
+        "gun": "grpc",
+    }
+    s = aliases.get(s, s)
+    if s in ("tcp", "ws", "grpc", "httpupgrade", "http"):
+        return s
+    raise ValueError(f"Неподдерживаемый transport type: {raw}")
+
+
+def _normalize_security(raw: str) -> str:
+    s = (raw or "none").strip().lower()
+    if s in ("none", "tls", "reality"):
+        return s
+    if s in ("xtls",):
+        # Для sing-box в клиентском VLESS это обычный TLS-контур.
+        return "tls"
+    raise ValueError(f"Неподдерживаемый security: {raw}")
 
 
 def _normalize_vless_flow(raw: str) -> str:
@@ -113,11 +143,13 @@ def build_singbox_config(parsed: dict[str, Any] | None, *, enabled: bool) -> str
         server = parsed["server"]
         port = parsed["port"]
         uuid = parsed["uuid"]
-        net = (p.get("type") or "tcp").lower()
-        security = (p.get("security") or "none").lower()
+        net = _normalize_network(p.get("type") or "tcp")
+        security = _normalize_security(p.get("security") or "none")
 
         # flow из ссылки; без параметра — plain VLESS (REALITY). Vision: flow=xtls-rprx-vision
         flow = _normalize_vless_flow(p.get("flow") or "")
+        if flow and security == "none":
+            raise ValueError("Параметр flow требует security=tls или security=reality")
 
         outbound: dict[str, Any] = {
             "type": "vless",
@@ -158,6 +190,8 @@ def build_singbox_config(parsed: dict[str, Any] | None, *, enabled: bool) -> str
                 sid = (p.get("sid") or p.get("shortid") or "").strip()
                 if sid:
                     tls["reality"]["short_id"] = sid
+                if not tls.get("server_name"):
+                    raise ValueError("Для REALITY нужен sni/peer (или доменное имя в host)")
             else:
                 fp = p.get("fp") or p.get("fingerprint")
                 if fp:
@@ -172,7 +206,7 @@ def build_singbox_config(parsed: dict[str, Any] | None, *, enabled: bool) -> str
         if security == "reality" and net == "tcp":
             outbound["connect_timeout"] = "20s"
         if net == "ws":
-            path = p.get("path") or "/"
+            path = (p.get("path") or "/").strip() or "/"
             if not path.startswith("/"):
                 path = "/" + path
             host_hdr = p.get("host") or server
@@ -185,7 +219,9 @@ def build_singbox_config(parsed: dict[str, Any] | None, *, enabled: bool) -> str
             svc = p.get("servicename") or p.get("serviceName") or "GunService"
             outbound["transport"] = {"type": "grpc", "service_name": svc}
         elif net == "httpupgrade":
-            path = p.get("path") or "/"
+            path = (p.get("path") or "/").strip() or "/"
+            if not path.startswith("/"):
+                path = "/" + path
             host_hdr = p.get("host") or server
             outbound["transport"] = {
                 "type": "httpupgrade",
@@ -194,7 +230,9 @@ def build_singbox_config(parsed: dict[str, Any] | None, *, enabled: bool) -> str
                 "headers": {},
             }
         elif net == "http":
-            path = p.get("path") or "/"
+            path = (p.get("path") or "/").strip() or "/"
+            if not path.startswith("/"):
+                path = "/" + path
             host_hdr = p.get("host") or server
             outbound["transport"] = {
                 "type": "http",
@@ -202,8 +240,6 @@ def build_singbox_config(parsed: dict[str, Any] | None, *, enabled: bool) -> str
                 "host": [host_hdr] if host_hdr else [],
                 "headers": {},
             }
-        elif net == "tcp":
-            pass
         outbounds = [
             outbound,
             {"type": "direct", "tag": "direct"},

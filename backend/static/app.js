@@ -7,12 +7,15 @@ const statusEl = document.getElementById("status");
 const usersBody = document.getElementById("usersTableBody");
 const createForm = document.getElementById("createUserForm");
 const usersTabBtn = document.getElementById("usersTabBtn");
+const vlessTabBtn = document.getElementById("vlessTabBtn");
 const analyticsTabBtn = document.getElementById("analyticsTabBtn");
 const usersSection = document.getElementById("usersSection");
 const usersTableSection = document.getElementById("usersTableSection");
+const vlessSection = document.getElementById("vlessSection");
 const analyticsSection = document.getElementById("analyticsSection");
 const archiveMenuBtn = document.getElementById("archiveMenuBtn");
 const archiveMenu = document.getElementById("archiveMenu");
+const usersSearchInput = document.getElementById("usersSearchInput");
 const importTemplateBtn = document.getElementById("importTemplateBtn");
 const importUsersInput = document.getElementById("importUsersInput");
 const reportUsersBtn = document.getElementById("reportUsersBtn");
@@ -35,7 +38,6 @@ const vlessForm = document.getElementById("vlessForm");
 const vlessEnabled = document.getElementById("vlessEnabled");
 const vlessLinkInput = document.getElementById("vlessLinkInput");
 const vlessFormHint = document.getElementById("vlessFormHint");
-const vlessRestartDoneBtn = document.getElementById("vlessRestartDoneBtn");
 const httpCredsModal = document.getElementById("httpCredsModal");
 const httpUserValue = document.getElementById("httpUserValue");
 const httpPassValue = document.getElementById("httpPassValue");
@@ -65,6 +67,27 @@ const USERS_REFRESH_INTERVAL_MS = 5000;
 let usersRefreshInFlight = false;
 let trafficChart = null;
 
+function filteredUsers() {
+  const q = String(usersSearchInput?.value || "")
+    .trim()
+    .toLowerCase();
+  if (!q) return usersCache;
+  return usersCache.filter((u) => String(u.username || "").toLowerCase().includes(q));
+}
+
+function renderUsersTable() {
+  const users = filteredUsers();
+  usersBody.innerHTML = "";
+  if (!users.length) {
+    const tr = document.createElement("tr");
+    const q = String(usersSearchInput?.value || "").trim();
+    tr.innerHTML = `<td colspan="13" class="empty-users">${q ? "Ничего не найдено" : "Пользователей пока нет"}</td>`;
+    usersBody.appendChild(tr);
+    return;
+  }
+  users.forEach((u) => usersBody.appendChild(userRow(u)));
+}
+
 function openHttpCredsModal() {
   httpCredsModal.classList.remove("hidden");
   httpCredsModal.style.display = "flex";
@@ -82,9 +105,25 @@ function closeArchiveMenu() {
 function showUsersTab() {
   usersSection.classList.remove("hidden");
   usersTableSection.classList.remove("hidden");
+  vlessSection.classList.add("hidden");
   analyticsSection.classList.add("hidden");
   usersTabBtn.classList.add("tab-active");
   usersTabBtn.setAttribute("aria-selected", "true");
+  vlessTabBtn.classList.remove("tab-active");
+  vlessTabBtn.setAttribute("aria-selected", "false");
+  analyticsTabBtn.classList.remove("tab-active");
+  analyticsTabBtn.setAttribute("aria-selected", "false");
+}
+
+function showVlessTab() {
+  usersSection.classList.add("hidden");
+  usersTableSection.classList.add("hidden");
+  vlessSection.classList.remove("hidden");
+  analyticsSection.classList.add("hidden");
+  usersTabBtn.classList.remove("tab-active");
+  usersTabBtn.setAttribute("aria-selected", "false");
+  vlessTabBtn.classList.add("tab-active");
+  vlessTabBtn.setAttribute("aria-selected", "true");
   analyticsTabBtn.classList.remove("tab-active");
   analyticsTabBtn.setAttribute("aria-selected", "false");
 }
@@ -92,11 +131,14 @@ function showUsersTab() {
 function showAnalyticsTab() {
   usersSection.classList.add("hidden");
   usersTableSection.classList.add("hidden");
+  vlessSection.classList.add("hidden");
   analyticsSection.classList.remove("hidden");
   analyticsTabBtn.classList.add("tab-active");
   analyticsTabBtn.setAttribute("aria-selected", "true");
   usersTabBtn.classList.remove("tab-active");
   usersTabBtn.setAttribute("aria-selected", "false");
+  vlessTabBtn.classList.remove("tab-active");
+  vlessTabBtn.setAttribute("aria-selected", "false");
 }
 
 function formatBytes(bytes) {
@@ -347,8 +389,7 @@ async function loadUsers() {
   try {
     const users = await api("/api/users");
     usersCache = users;
-    usersBody.innerHTML = "";
-    users.forEach((u) => usersBody.appendChild(userRow(u)));
+    renderUsersTable();
     refreshChartUserOptions(users);
   } catch (e) {
     setStatus(`Ошибка загрузки: ${e.message}`, true);
@@ -371,11 +412,10 @@ async function loadMeta() {
       vlessBadge.classList.remove("hidden");
       if (panelMeta.vless_singbox_restart_pending) {
         vlessBadge.classList.add("warn");
-        vlessBadge.title =
-          "Конфиг на диске обновлён; sing-box в памяти может быть старым. Выполните docker compose restart sing-box и нажмите «Готово» в блоке VLESS.";
+        vlessBadge.title = "Автоперезапуск сервисов VLESS не завершился; попробуйте сохранить ссылку ещё раз.";
       } else if (panelMeta.vless_clients_chained) {
         vlessBadge.classList.add("ok");
-        vlessBadge.title = "HTTP/SOCKS и MTProto идут через sing-box → VLESS (после рестарта sing-box)";
+        vlessBadge.title = "HTTP/SOCKS и MTProto идут через sing-box → VLESS";
       } else {
         vlessBadge.classList.add("warn");
         vlessBadge.title =
@@ -393,11 +433,11 @@ async function loadVlessSettings() {
   if (vlessFormHint) {
     if (s.vless_singbox_restart_pending) {
       vlessFormHint.textContent =
-        "Sing-box не подхватывает новый config.json без перезапуска процесса: пока не выполнен restart, трафик может идти по старому маршруту (напрямую), хотя SOCKS отвечает. Сначала: docker compose restart sing-box, затем кнопка «Готово» ниже.";
+        "Не удалось автоматически перезапустить сервисы VLESS. Проверьте доступ backend к docker.sock и сохраните ссылку ещё раз.";
       vlessFormHint.className = "hint callout callout-warn";
     } else if (s.vless_clients_chained) {
       vlessFormHint.textContent =
-        "Цепочка к клиентам включена: на диске есть vless-out, прога через sing-box прошла, рестарт подтверждён.";
+        "Цепочка к клиентам включена: ссылка применена, сервисы автоматически перезапущены.";
       vlessFormHint.className = "hint callout callout-ok";
     } else if (s.vless_active) {
       vlessFormHint.textContent =
@@ -411,9 +451,6 @@ async function loadVlessSettings() {
       vlessFormHint.textContent = "";
       vlessFormHint.className = "hint callout callout-neutral is-empty";
     }
-  }
-  if (vlessRestartDoneBtn) {
-    vlessRestartDoneBtn.classList.toggle("hidden", !s.vless_singbox_restart_pending);
   }
 }
 
@@ -780,6 +817,15 @@ archiveMenuBtn.addEventListener("click", () => {
   archiveMenu.classList.toggle("hidden");
 });
 usersTabBtn.addEventListener("click", showUsersTab);
+vlessTabBtn.addEventListener("click", async () => {
+  showVlessTab();
+  try {
+    await loadVlessSettings();
+    await loadMeta();
+  } catch (e) {
+    setStatus(`Ошибка VLESS: ${e.message}`, true);
+  }
+});
 analyticsTabBtn.addEventListener("click", async () => {
   showAnalyticsTab();
   try {
@@ -809,6 +855,11 @@ chartRangeSelect.addEventListener("change", async () => {
     setStatus(`Ошибка графика: ${e.message}`, true);
   }
 });
+if (usersSearchInput) {
+  usersSearchInput.addEventListener("input", () => {
+    renderUsersTable();
+  });
+}
 
 if (vlessForm) {
   vlessForm.addEventListener("submit", async (e) => {
@@ -823,22 +874,7 @@ if (vlessForm) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      setStatus(
-        "Настройки VLESS сохранены. Обязательно: docker compose restart sing-box, затем нажмите «Готово: sing-box перезапущен»."
-      );
-      await loadMeta();
-      await loadVlessSettings();
-    } catch (err) {
-      setStatus(err.message, true);
-    }
-  });
-}
-
-if (vlessRestartDoneBtn) {
-  vlessRestartDoneBtn.addEventListener("click", async () => {
-    try {
-      await api("/api/settings/vless/restart-done", { method: "POST" });
-      setStatus("Рестарт sing-box отмечен; цепочка пересобрана.");
+      setStatus("Настройки VLESS сохранены. Сервисы цепочки автоматически перезапускаются.");
       await loadMeta();
       await loadVlessSettings();
     } catch (err) {

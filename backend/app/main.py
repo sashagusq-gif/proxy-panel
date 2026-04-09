@@ -59,6 +59,13 @@ ACCESS_RESYNC_INTERVAL_SECONDS = float(os.environ.get("ACCESS_RESYNC_INTERVAL_SE
 VLESS_CHAIN_PROBE_TIMEOUT = float(os.environ.get("VLESS_CHAIN_PROBE_TIMEOUT", "4"))
 VLESS_CHAIN_PROBE_HOST = os.environ.get("VLESS_CHAIN_PROBE_HOST", "1.1.1.1").strip()
 VLESS_CHAIN_PROBE_PORT = int(os.environ.get("VLESS_CHAIN_PROBE_PORT", "443"))
+DOCKER_SOCKET_PATH = os.environ.get("DOCKER_SOCKET_PATH", "/var/run/docker.sock")
+AUTO_RESTART_VLESS_SERVICES = (
+    os.environ.get("AUTO_RESTART_VLESS_SERVICES", "true").strip().lower() in ("1", "true", "yes", "on")
+)
+VLESS_RESTART_SERVICES = tuple(
+    s.strip() for s in os.environ.get("VLESS_RESTART_SERVICES", "sing-box,proxy,mtproto").split(",") if s.strip()
+)
 PRUNE_TRAFFIC_EVENTS_MAX_ROWS = int(os.environ.get("PRUNE_TRAFFIC_EVENTS_MAX_ROWS", "500000"))
 PRUNE_TRAFFIC_EVENTS_CHUNK = int(os.environ.get("PRUNE_TRAFFIC_EVENTS_CHUNK", "100000"))
 SESSION_COOKIE_NAME = "panel_session"
@@ -512,6 +519,126 @@ def vless_clients_chained(settings: PanelSettings) -> bool:
     if not vless_proxy_chain_active(settings):
         return False
     return not settings.vless_singbox_restart_pending
+
+
+def _docker_http_request(method: str, path: str, body: bytes = b"", timeout: float = 10.0) -> tuple[int, bytes]:
+    """
+    Минимальный HTTP-клиент к Docker Engine API через unix-socket.
+    Нужен для авто-рестарта сервисов после обновления VLESS.
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(DOCKER_SOCKET_PATH)
+        headers = [
+            f"{method} {path} HTTP/1.1",
+            "Host: docker",
+            "Connection: close",
+            f"Content-Length: {len(body)}",
+            "",
+            "",
+        ]
+        req = "\r\n".join(headers).encode("utf-8") + body
+        sock.sendall(req)
+        chunks: list[bytes] = []
+        while True:
+            data = sock.recv(65536)
+            if not data:
+                break
+            chunks.append(data)
+        raw = b"".join(chunks)
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+    if not raw:
+        return 0, b""
+    head, _, payload = raw.partition(b"\r\n\r\n")
+    head_lines = head.split(b"\r\n")
+    first_line = head_lines[0].decode("utf-8", errors="replace") if head_lines else ""
+    parts = first_line.split(" ")
+    status = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+    # Docker API часто отвечает chunked transfer.
+    is_chunked = False
+    for ln in head_lines[1:]:
+        if b":" not in ln:
+            continue
+        k, v = ln.split(b":", 1)
+        if k.strip().lower() == b"transfer-encoding" and b"chunked" in v.strip().lower():
+            is_chunked = True
+            break
+    if is_chunked:
+        decoded = bytearray()
+        rest = payload
+        while rest:
+            line, sep, tail = rest.partition(b"\r\n")
+            if not sep:
+                break
+            try:
+                size = int(line.strip().split(b";", 1)[0], 16)
+            except ValueError:
+                break
+            if size == 0:
+                break
+            if len(tail) < size + 2:
+                break
+            decoded.extend(tail[:size])
+            rest = tail[size + 2 :]
+        payload = bytes(decoded)
+    return status, payload
+
+
+def _docker_container_ids_by_service(service_name: str) -> list[str]:
+    filters = json.dumps({"label": [f"com.docker.compose.service={service_name}"]}, separators=(",", ":"))
+    status, payload = _docker_http_request(
+        "GET",
+        f"/containers/json?all=1&filters={quote(filters, safe='')}",
+    )
+    if status != 200:
+        return []
+    try:
+        items = json.loads(payload.decode("utf-8") or "[]")
+    except json.JSONDecodeError:
+        return []
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        cid = item.get("Id")
+        if isinstance(cid, str) and cid:
+            out.append(cid)
+    return out
+
+
+def restart_vless_runtime_services() -> tuple[bool, str]:
+    """
+    Перезапускает sing-box/proxy/mtproto после изменения VLESS-ссылки.
+    Возвращает (ok, message), чтобы UI показывал понятный статус.
+    """
+    if not AUTO_RESTART_VLESS_SERVICES:
+        return True, "auto-restart disabled"
+    if not Path(DOCKER_SOCKET_PATH).exists():
+        return False, f"Docker socket not found: {DOCKER_SOCKET_PATH}"
+
+    restarted = 0
+    for service in VLESS_RESTART_SERVICES:
+        ids = _docker_container_ids_by_service(service)
+        if not ids:
+            # Не считаем это фатальной ошибкой: состав стека может отличаться.
+            continue
+        for cid in ids:
+            status, _ = _docker_http_request("POST", f"/containers/{cid}/restart?t=12", timeout=20.0)
+            if status not in (204, 304):
+                return False, f"restart failed for service={service}, status={status}"
+            restarted += 1
+
+    if restarted == 0:
+        return False, "no compose service containers found for restart"
+
+    # Небольшая пауза: после restart сразу идёт синхронизация конфигов/проба.
+    time.sleep(1.5)
+    return True, "ok"
 
 
 def user_has_proxy_access(user: ProxyUser, now: datetime | None = None) -> bool:
@@ -1280,6 +1407,14 @@ def put_vless_settings(
     db.commit()
     db.refresh(s)
     sync_proxy_config(db)
+    if changed:
+        restart_ok, _restart_msg = restart_vless_runtime_services()
+        if payload.vless_enabled:
+            s.vless_singbox_restart_pending = not restart_ok
+            db.commit()
+            db.refresh(s)
+        # После перезапуска обязательно пересобираем цепочки и gate-логику.
+        sync_proxy_config(db)
     return VlessSettingsOut(
         vless_enabled=s.vless_enabled,
         vless_link=s.vless_link,
@@ -1291,10 +1426,13 @@ def put_vless_settings(
 
 @app.post("/api/settings/vless/restart-done", response_model=VlessSettingsOut)
 def vless_singbox_restart_done(_auth: str = Depends(require_auth), db: Session = Depends(get_db)):
-    """После docker compose restart sing-box — снять блокировку цепочки и пересобрать конфиги."""
+    """Fallback-кнопка: вручную триггернуть авто-рестарт сервисов VLESS и пересборку цепочки."""
     s = get_panel_settings(db)
     if not s.vless_enabled:
         raise HTTPException(status_code=400, detail="Цепочка VLESS выключена")
+    ok, msg = restart_vless_runtime_services()
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Авто-рестарт сервисов не выполнен: {msg}")
     s.vless_singbox_restart_pending = False
     db.commit()
     db.refresh(s)

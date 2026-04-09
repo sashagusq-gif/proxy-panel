@@ -11,7 +11,7 @@
       rel="stylesheet"
     />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=10" />
+    <link rel="stylesheet" href="/static/styles.css?v=11" />
   </head>
   <body>
     <div id="loginOverlay" class="overlay">
@@ -66,6 +66,7 @@
         <button id="usersTabBtn" type="button" class="tab tab-active" role="tab" aria-selected="true">
           Пользователи
         </button>
+        <button id="vlessTabBtn" type="button" class="tab" role="tab" aria-selected="false">VLESS</button>
         <button id="analyticsTabBtn" type="button" class="tab" role="tab" aria-selected="false">Графики</button>
       </div>
 
@@ -104,7 +105,7 @@
         </div>
       </section>
 
-      <section class="card card-vless" id="vlessSection">
+      <section class="card card-vless hidden" id="vlessSection">
         <div class="card-head">
           <h2 class="card-title">VLESS</h2>
           <p class="card-desc">Цепочка для HTTP, SOCKS5 и MTProto через sing-box</p>
@@ -116,10 +117,7 @@
             <p>
               Если узел VLESS отвечает, трафик 3proxy (HTTP/SOCKS) и MTProto (mtg) идёт в sing-box по SOCKS5, затем в VLESS; если нет — цепочка не включается и клиенты выходят в интернет напрямую.
             </p>
-            <p>
-              <strong>Sing-box не перечитывает JSON сам:</strong> после сохранения ссылки нужен
-              <code>docker compose restart sing-box</code>, иначе процесс может работать по старому конфигу (например direct), а проверка SOCKS всё равно будет «успешной».
-            </p>
+            <p>После сохранения ссылки панель автоматически перезапускает нужные сервисы цепочки.</p>
             <p>
               Без <code>flow</code> — обычный VLESS (как в большинстве REALITY-ссылок). Если не коннектится — попробуйте
               <code>flow=xtls-rprx-vision</code> или в ссылке указать <code>alpn=http/1.1</code> (или <code>h2</code>), как в вашей панели Xray.
@@ -148,9 +146,6 @@
           </label>
           <div class="form-actions">
             <button type="submit" class="btn btn-primary">Сохранить</button>
-            <button type="button" id="vlessRestartDoneBtn" class="btn btn-secondary hidden">
-              Готово: sing-box перезапущен
-            </button>
           </div>
         </form>
         <p id="vlessFormHint" class="hint callout callout-neutral is-empty" role="status"></p>
@@ -164,6 +159,15 @@
             <p class="card-desc tight">Список, трафик и действия</p>
           </div>
           <div class="actions-right">
+            <input
+              id="usersSearchInput"
+              class="input-small users-search"
+              type="search"
+              placeholder="Поиск по username..."
+              autocomplete="off"
+              spellcheck="false"
+              aria-label="Поиск пользователя"
+            />
             <div class="menu-wrap">
               <button id="archiveMenuBtn" type="button" class="btn btn-secondary">Архив данных</button>
               <div id="archiveMenu" class="menu hidden">
@@ -287,6 +291,6 @@
         </div>
       </div>
     </div>
-    <script src="/static/app.js?v=16"></script>
+    <script src="/static/app.js?v=18"></script>
   </body>
 </html>
