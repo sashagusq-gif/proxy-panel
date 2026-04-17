@@ -781,6 +781,23 @@ input::placeholder {
   min-width: 220px;
 }
 
+.users-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 18px 16px;
+  border-top: 1px solid rgba(36, 49, 82, 0.45);
+}
+
+.users-page-info {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  min-width: 12em;
+  text-align: center;
+}
+
 .empty-users {
   color: var(--muted);
   text-align: center;

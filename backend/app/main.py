@@ -18,9 +18,9 @@ import urllib.request
 from urllib.parse import quote
 import ipaddress
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, Response
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, Response
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -69,6 +69,10 @@ VLESS_RESTART_SERVICES = tuple(
 )
 PRUNE_TRAFFIC_EVENTS_MAX_ROWS = int(os.environ.get("PRUNE_TRAFFIC_EVENTS_MAX_ROWS", "500000"))
 PRUNE_TRAFFIC_EVENTS_CHUNK = int(os.environ.get("PRUNE_TRAFFIC_EVENTS_CHUNK", "100000"))
+# Семплы для графиков: API смотрит максимум на 24 ч; старше — мёртвый вес. 0 = не удалять.
+TRAFFIC_SAMPLES_RETENTION_HOURS = int(os.environ.get("TRAFFIC_SAMPLES_RETENTION_HOURS", "48"))
+TRAFFIC_SAMPLES_PRUNE_CHUNK = int(os.environ.get("TRAFFIC_SAMPLES_PRUNE_CHUNK", "10000"))
+TRAFFIC_SAMPLES_PRUNE_MAX_BATCHES = int(os.environ.get("TRAFFIC_SAMPLES_PRUNE_MAX_BATCHES", "50"))
 SESSION_COOKIE_NAME = "panel_session"
 SESSION_TTL_SECONDS = 12 * 60 * 60
 MAX_IMPORT_ROWS = 500
@@ -239,6 +243,11 @@ class VlessSettingsUpdate(BaseModel):
     vless_link: str | None = None
 
 
+class UserChartOptionOut(BaseModel):
+    id: int
+    username: str
+
+
 class UserOut(BaseModel):
     id: int
     username: str
@@ -255,6 +264,13 @@ class UserOut(BaseModel):
     expires_at: datetime | None
     traffic_limit_bytes: int | None
     access_allowed: bool
+
+
+class UsersPageOut(BaseModel):
+    items: list[UserOut]
+    total: int
+    page: int
+    per_page: int
 
 
 class UserCreatedOut(UserOut):
@@ -385,6 +401,25 @@ def maybe_prune_traffic_events(session: Session) -> None:
         ),
         {"lim": PRUNE_TRAFFIC_EVENTS_CHUNK},
     )
+
+
+def maybe_prune_traffic_samples(session: Session) -> None:
+    """Удаляет старые строки traffic_samples (графики в API — до 24 ч)."""
+    if TRAFFIC_SAMPLES_RETENTION_HOURS <= 0:
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=TRAFFIC_SAMPLES_RETENTION_HOURS)
+    for _ in range(max(1, TRAFFIC_SAMPLES_PRUNE_MAX_BATCHES)):
+        res = session.execute(
+            text(
+                "DELETE FROM traffic_samples WHERE id IN ("
+                "SELECT id FROM traffic_samples WHERE captured_at < :cutoff "
+                "ORDER BY id ASC LIMIT :lim)"
+            ),
+            {"cutoff": cutoff, "lim": TRAFFIC_SAMPLES_PRUNE_CHUNK},
+        )
+        deleted = res.rowcount or 0
+        if deleted < TRAFFIC_SAMPLES_PRUNE_CHUNK:
+            break
 
 
 def get_db():
@@ -1041,6 +1076,7 @@ def traffic_worker(stop_event: threading.Event) -> None:
                     if prune_tick >= 200:
                         prune_tick = 0
                         maybe_prune_traffic_events(session)
+                        maybe_prune_traffic_samples(session)
 
                     session.commit()
 
@@ -1485,10 +1521,44 @@ def vless_singbox_restart_done(_auth: str = Depends(require_auth), db: Session =
     )
 
 
-@app.get("/api/users", response_model=list[UserOut])
-def list_users(_auth: str = Depends(require_auth), db: Session = Depends(get_db)):
-    users = db.scalars(select(ProxyUser).order_by(ProxyUser.id.asc())).all()
-    return [user_to_out(u) for u in users]
+@app.get("/api/users", response_model=UsersPageOut)
+def list_users(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=20),
+    q: str = Query("", max_length=200),
+    _auth: str = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Список пользователей с пагинацией (не более `per_page` записей, по умолчанию 20)."""
+    if per_page > 20:
+        per_page = 20
+    q_clean = q.strip()
+    stmt = select(ProxyUser).order_by(ProxyUser.id.asc())
+    count_stmt = select(func.count()).select_from(ProxyUser)
+    if q_clean:
+        esc = q_clean.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{esc}%"
+        filt = ProxyUser.username.like(pattern, escape="\\")
+        stmt = stmt.where(filt)
+        count_stmt = count_stmt.where(filt)
+    total = int(db.scalar(count_stmt) or 0)
+    total_pages = max(1, (total + per_page - 1) // per_page) if total else 1
+    if page > total_pages:
+        page = total_pages
+    offset = (page - 1) * per_page
+    users = db.scalars(stmt.offset(offset).limit(per_page)).all()
+    return UsersPageOut(
+        items=[user_to_out(u) for u in users],
+        total=total,
+        page=page,
+        per_page=per_page,
+    )
+
+
+@app.get("/api/users/chart-options", response_model=list[UserChartOptionOut])
+def list_users_chart_options(_auth: str = Depends(require_auth), db: Session = Depends(get_db)):
+    rows = db.execute(select(ProxyUser.id, ProxyUser.username).order_by(ProxyUser.id.asc())).all()
+    return [UserChartOptionOut(id=i, username=username) for i, username in rows]
 
 
 def _bytes_to_gib_str(n: int | None) -> str:

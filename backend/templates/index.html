@@ -11,7 +11,7 @@
       rel="stylesheet"
     />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=11" />
+    <link rel="stylesheet" href="/static/styles.css?v=12" />
   </head>
   <body>
     <div id="loginOverlay" class="overlay">
@@ -213,6 +213,11 @@
             <tbody id="usersTableBody"></tbody>
           </table>
         </div>
+        <div id="usersPagination" class="users-pagination hidden" aria-label="Страницы списка пользователей">
+          <button type="button" id="usersPagePrev" class="btn btn-secondary btn-compact">Назад</button>
+          <span id="usersPageInfo" class="users-page-info"></span>
+          <button type="button" id="usersPageNext" class="btn btn-secondary btn-compact">Вперёд</button>
+        </div>
       </section>
 
       <section class="card hidden" id="analyticsSection">
@@ -291,6 +296,6 @@
         </div>
       </div>
     </div>
-    <script src="/static/app.js?v=18"></script>
+    <script src="/static/app.js?v=20"></script>
   </body>
 </html>

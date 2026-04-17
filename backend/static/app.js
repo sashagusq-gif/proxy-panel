@@ -50,6 +50,10 @@ const limitsUserId = document.getElementById("limitsUserId");
 const limitsExpiresInput = document.getElementById("limitsExpiresInput");
 const limitsGbInput = document.getElementById("limitsGbInput");
 const closeLimitsBtn = document.getElementById("closeLimitsBtn");
+const usersPagination = document.getElementById("usersPagination");
+const usersPagePrev = document.getElementById("usersPagePrev");
+const usersPageNext = document.getElementById("usersPageNext");
+const usersPageInfo = document.getElementById("usersPageInfo");
 
 let panelMeta = {
   proxy_public_host: "127.0.0.1",
@@ -63,29 +67,42 @@ let panelMeta = {
 };
 let currentHttpCredsText = "";
 let usersCache = [];
+let usersTableTotal = 0;
+const USERS_PAGE_SIZE = 20;
+let usersListPage = 1;
+let usersSearchDebounce = null;
 const USERS_REFRESH_INTERVAL_MS = 5000;
 let usersRefreshInFlight = false;
 let trafficChart = null;
 
-function filteredUsers() {
-  const q = String(usersSearchInput?.value || "")
-    .trim()
-    .toLowerCase();
-  if (!q) return usersCache;
-  return usersCache.filter((u) => String(u.username || "").toLowerCase().includes(q));
+function updateUsersPaginationUi(total, totalPages) {
+  if (!usersPagination) return;
+  if (total <= USERS_PAGE_SIZE) {
+    usersPagination.classList.add("hidden");
+    return;
+  }
+  usersPagination.classList.remove("hidden");
+  if (usersPageInfo) {
+    usersPageInfo.textContent = `Страница ${usersListPage} из ${totalPages} · всего ${total}`;
+  }
+  if (usersPagePrev) usersPagePrev.disabled = usersListPage <= 1;
+  if (usersPageNext) usersPageNext.disabled = usersListPage >= totalPages;
 }
 
 function renderUsersTable() {
-  const users = filteredUsers();
+  const total = usersTableTotal;
   usersBody.innerHTML = "";
-  if (!users.length) {
+  if (!total) {
     const tr = document.createElement("tr");
     const q = String(usersSearchInput?.value || "").trim();
     tr.innerHTML = `<td colspan="13" class="empty-users">${q ? "Ничего не найдено" : "Пользователей пока нет"}</td>`;
     usersBody.appendChild(tr);
+    if (usersPagination) usersPagination.classList.add("hidden");
     return;
   }
-  users.forEach((u) => usersBody.appendChild(userRow(u)));
+  const totalPages = Math.max(1, Math.ceil(total / USERS_PAGE_SIZE));
+  usersCache.forEach((u) => usersBody.appendChild(userRow(u)));
+  updateUsersPaginationUi(total, totalPages);
 }
 
 function openHttpCredsModal() {
@@ -387,10 +404,31 @@ async function loadUsers() {
   if (usersRefreshInFlight) return;
   usersRefreshInFlight = true;
   try {
-    const users = await api("/api/users");
-    usersCache = users;
-    renderUsersTable();
-    refreshChartUserOptions(users);
+    const q = String(usersSearchInput?.value || "").trim();
+    for (let guard = 0; guard < 5; guard += 1) {
+      const qs = new URLSearchParams({
+        page: String(usersListPage),
+        per_page: String(USERS_PAGE_SIZE),
+      });
+      if (q) qs.set("q", q);
+      const [pageData, chartUsers] = await Promise.all([
+        api(`/api/users?${qs.toString()}`),
+        api("/api/users/chart-options"),
+      ]);
+      const total = Number(pageData.total) || 0;
+      const perPage = Number(pageData.per_page) || USERS_PAGE_SIZE;
+      const totalPages = total === 0 ? 1 : Math.max(1, Math.ceil(total / perPage));
+      if (usersListPage > totalPages) {
+        usersListPage = totalPages;
+        continue;
+      }
+      usersListPage = Number(pageData.page) || usersListPage;
+      usersTableTotal = total;
+      usersCache = Array.isArray(pageData.items) ? pageData.items : [];
+      renderUsersTable();
+      refreshChartUserOptions(chartUsers);
+      break;
+    }
   } catch (e) {
     setStatus(`Ошибка загрузки: ${e.message}`, true);
   } finally {
@@ -857,7 +895,30 @@ chartRangeSelect.addEventListener("change", async () => {
 });
 if (usersSearchInput) {
   usersSearchInput.addEventListener("input", () => {
-    renderUsersTable();
+    usersListPage = 1;
+    if (usersSearchDebounce) clearTimeout(usersSearchDebounce);
+    usersSearchDebounce = setTimeout(() => {
+      usersSearchDebounce = null;
+      loadUsers();
+    }, 300);
+  });
+}
+
+if (usersPagePrev) {
+  usersPagePrev.addEventListener("click", () => {
+    if (usersListPage > 1) {
+      usersListPage -= 1;
+      loadUsers();
+    }
+  });
+}
+if (usersPageNext) {
+  usersPageNext.addEventListener("click", () => {
+    const totalPages = usersTableTotal === 0 ? 1 : Math.max(1, Math.ceil(usersTableTotal / USERS_PAGE_SIZE));
+    if (usersListPage < totalPages) {
+      usersListPage += 1;
+      loadUsers();
+    }
   });
 }
 
