@@ -12,8 +12,12 @@ networks:
 
 services:
   backend:
+    # Тег по коммиту: при обновлении кода compose пересоздаёт контейнер, а не переиспользует старый образ.
+    image: proxy-admin-panel-backend:${PANEL_IMAGE_TAG:-local}
     build:
       context: ./backend
+      args:
+        PANEL_GIT_REVISION: ${PANEL_GIT_REVISION:-unknown}
     container_name: proxy_admin_backend
     restart: unless-stopped
     environment:

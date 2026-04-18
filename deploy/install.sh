@@ -218,14 +218,25 @@ fi
 
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
   echo "Updating existing repository in ${INSTALL_DIR}..."
-  git -C "${INSTALL_DIR}" fetch --all --prune
+  git -C "${INSTALL_DIR}" remote set-url origin "${REPO_URL_VALUE}" 2>/dev/null || true
+  git -C "${INSTALL_DIR}" fetch origin "${BRANCH_VALUE}" --prune
   git -C "${INSTALL_DIR}" checkout "${BRANCH_VALUE}"
-  git -C "${INSTALL_DIR}" pull --ff-only
+  # Совпадает с origin (в т.ч. для shallow clone); при расхождении — жёстко как на GitHub.
+  if ! git -C "${INSTALL_DIR}" merge --ff-only "origin/${BRANCH_VALUE}"; then
+    echo "WARN: fast-forward failed, resetting to origin/${BRANCH_VALUE} (локальные коммиты в ${INSTALL_DIR} будут потеряны)."
+    git -C "${INSTALL_DIR}" reset --hard "origin/${BRANCH_VALUE}"
+  fi
 else
   echo "Cloning repository to ${INSTALL_DIR}..."
   rm -rf "${INSTALL_DIR}"
   git clone --depth 1 --branch "${BRANCH_VALUE}" "${REPO_URL_VALUE}" "${INSTALL_DIR}"
 fi
+
+PANEL_GIT_REVISION="$(git -C "${INSTALL_DIR}" rev-parse HEAD)"
+PANEL_IMAGE_TAG="$(git -C "${INSTALL_DIR}" rev-parse --short HEAD)"
+echo "Deploying git revision ${PANEL_IMAGE_TAG} (${PANEL_GIT_REVISION})"
+export PANEL_GIT_REVISION
+export PANEL_IMAGE_TAG
 
 PANEL_SECRET_KEY="$(random_string)"
 
@@ -250,6 +261,8 @@ chmod 755 "${PANEL_DATA_DIR}"
   echo "SINGBOX_SOCKS_HOST=$(quote_env_value "${SINGBOX_SOCKS_HOST}")"
   echo "SINGBOX_SOCKS_PORT=${SINGBOX_SOCKS_PORT}"
   echo "PANEL_DATA_HOST_PATH=$(quote_env_value "${PANEL_DATA_DIR}")"
+  echo "PANEL_IMAGE_TAG=$(quote_env_value "${PANEL_IMAGE_TAG}")"
+  echo "PANEL_GIT_REVISION=$(quote_env_value "${PANEL_GIT_REVISION}")"
 } >"${INSTALL_DIR}/.env"
 
 echo "Opening firewall ports (best effort)..."

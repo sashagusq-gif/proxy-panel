@@ -1384,9 +1384,16 @@ def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+def _read_panel_git_revision() -> str:
+    try:
+        return Path("/app/.git-revision").read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "revision": _read_panel_git_revision()}
 
 
 @app.post("/api/auth/login")

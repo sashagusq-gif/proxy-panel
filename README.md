@@ -114,6 +114,20 @@ curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/deploy/install.
 - `PROXY_LOGDUMP_BYTES` (по умолчанию `65536`) — как часто `3proxy` пишет промежуточные записи при длинных сессиях. Больше значение = меньше нагрузка, реже обновления.
 - `TRAFFIC_POLL_INTERVAL_SECONDS` (по умолчанию `2.0`) — как часто backend читает лог и обновляет БД.
 
+## Обновление с GitHub
+
+Повторный запуск `sudo bash deploy/install.sh` обновляет репозиторий (в т.ч. shallow clone), записывает в `.env` тег образа `PANEL_IMAGE_TAG` по текущему коммиту и поднимает стек с `--build`, чтобы Docker не оставался на старом слое.
+
+Вручную после `git pull` в каталоге установки:
+
+```bash
+export PANEL_IMAGE_TAG="$(git rev-parse --short HEAD)"
+export PANEL_GIT_REVISION="$(git rev-parse HEAD)"
+docker compose --env-file .env up -d --build
+```
+
+Проверка, что поднялась нужная ревизия: `curl -sS http://127.0.0.1:8000/health` — в JSON будет поле `revision` (полный SHA коммита, зашитый при сборке образа).
+
 ## Проверка здоровья
 
 ```bash
@@ -122,7 +136,7 @@ curl -fsS http://localhost:8000/health
 
 ## API
 
-- `GET /api/users` - список пользователей
+- `GET /api/users` - список пользователей (пагинация: `page`, `per_page`, опционально `q`)
 - `GET /api/traffic/samples` - данные для графиков (все/по пользователю)
 - `POST /api/auth/login` - вход в панель
 - `POST /api/auth/logout` - выход из панели
