@@ -128,6 +128,21 @@ open_port_best_effort() {
   fi
 }
 
+port_in_use() {
+  local port="$1"
+  ss -ltn "( sport = :${port} )" | awk 'NR>1 {exit 0} END {exit 1}'
+}
+
+assert_port_free() {
+  local port="$1"
+  local title="$2"
+  if port_in_use "${port}"; then
+    echo "ERROR: ${title} port ${port} is already in use on host."
+    echo "Free this port or choose another one, then rerun installer."
+    exit 1
+  fi
+}
+
 echo "== Proxy Admin Panel installer =="
 
 REPO_URL_VALUE="${REPO_URL:-https://github.com/sashagusq-gif/proxy-panel.git}"
@@ -154,7 +169,7 @@ PANEL_DOMAIN_RAW="$(prompt_text "Panel domain for HTTPS (empty = no HTTPS)" "")"
 PANEL_DOMAIN="$(sanitize_domain "${PANEL_DOMAIN_RAW}")"
 USE_SSL="no"
 if [[ -n "${PANEL_DOMAIN}" ]]; then
-  USE_SSL="$(prompt_yes_no "Issue SSL certificate via Caddy? (yes/no)" "yes")"
+  USE_SSL="$(prompt_yes_no "Issue SSL certificate via Caddy? (yes/no)" "no")"
 fi
 
 PROXY_PUBLIC_HOST="auto"
@@ -198,6 +213,15 @@ if [[ -n "${PANEL_DOMAIN}" ]]; then
       exit 1
     fi
   fi
+fi
+
+assert_port_free "${PANEL_PORT}" "Panel"
+assert_port_free "${HTTP_PROXY_PORT}" "HTTP proxy"
+assert_port_free "${SOCKS_PROXY_PORT}" "SOCKS5 proxy"
+assert_port_free "${MTPROTO_PUBLIC_PORT}" "MTProto"
+if [[ "${USE_SSL}" == "yes" && -n "${PANEL_DOMAIN}" ]]; then
+  assert_port_free "80" "Caddy HTTP"
+  assert_port_free "443" "Caddy HTTPS"
 fi
 
 echo "Installing system dependencies..."

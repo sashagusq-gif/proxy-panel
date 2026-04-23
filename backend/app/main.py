@@ -15,7 +15,7 @@ import secrets
 import socket
 import sqlite3
 import urllib.request
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 import ipaddress
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -714,6 +714,22 @@ def user_to_out(user: ProxyUser) -> UserOut:
     )
 
 
+def escape_3proxy_token(value: str) -> str:
+    """
+    Escape special characters so credentials are parsed correctly by 3proxy.
+    """
+    escaped = value.replace("\\", "\\\\")
+    escaped = escaped.replace("$", "\\$")
+    escaped = escaped.replace('"', '\\"')
+    escaped = escaped.replace(" ", "\\ ")
+    return escaped
+
+
+def quote_3proxy_password(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f"\"{escaped}\""
+
+
 def render_proxy_config(
     users: list[ProxyUser], settings: PanelSettings, *, apply_upstream_chain: bool
 ) -> str:
@@ -723,7 +739,7 @@ def render_proxy_config(
     now = datetime.now(timezone.utc)
 
     for user in users:
-        users_line.append(f"{user.username}:CL:{user.password}")
+        users_line.append(f"{escape_3proxy_token(user.username)}:CL:{quote_3proxy_password(user.password)}")
         if user.allow_http and user_has_proxy_access(user, now):
             http_users.append(user.username)
         if user.allow_socks5 and user_has_proxy_access(user, now):
@@ -814,6 +830,34 @@ def sanitize_mtproto_secret(raw_secret: str | None) -> str:
     return generate_mtproto_secret()
 
 
+def restore_mtproto_secret(raw_secret: str | None, raw_link: str | None = None) -> str:
+    """
+    Preserve MTProto secret from backups to keep generated tg:// links stable.
+    Falls back to a generated secret only when backup data does not contain
+    a usable secret value.
+    """
+    secret = (raw_secret or "").strip().lower()
+    if secret:
+        is_hex = all(ch in "0123456789abcdef" for ch in secret)
+        if is_hex and len(secret) >= 34 and len(secret) % 2 == 0 and secret.startswith(("dd", "ee")):
+            return secret
+
+    link = (raw_link or "").strip()
+    if link:
+        try:
+            parsed = urlparse(link)
+            if parsed.scheme == "tg":
+                secret_param = parse_qs(parsed.query).get("secret", [])
+                if secret_param:
+                    extracted = secret_param[0].strip().lower()
+                    is_hex = all(ch in "0123456789abcdef" for ch in extracted)
+                    if is_hex and len(extracted) >= 34 and len(extracted) % 2 == 0 and extracted.startswith(("dd", "ee")):
+                        return extracted
+        except Exception:
+            pass
+    return generate_mtproto_secret()
+
+
 def render_mtproto_config(
     users: list[ProxyUser], settings: PanelSettings, *, apply_upstream_chain: bool
 ) -> str:
@@ -872,10 +916,10 @@ def normalize_mtproto_secrets(session: Session) -> None:
     users = session.scalars(select(ProxyUser).where(ProxyUser.allow_mtproto == True)).all()
     changed = False
     for user in users:
-        normalized = sanitize_mtproto_secret(user.mtproto_secret)
-        if user.mtproto_secret != normalized:
-            user.mtproto_secret = normalized
-            changed = True
+        if user.mtproto_secret and str(user.mtproto_secret).strip():
+            continue
+        user.mtproto_secret = generate_mtproto_secret()
+        changed = True
     if changed:
         session.commit()
 
@@ -1983,7 +2027,14 @@ async def restore_users(file: UploadFile = File(...), _auth: str = Depends(requi
                 allow_http=allow_http,
                 allow_socks5=allow_socks5,
                 allow_mtproto=allow_mtproto,
-                mtproto_secret=sanitize_mtproto_secret(str(item.get("mtproto_secret") or "")) if allow_mtproto else None,
+                mtproto_secret=(
+                    restore_mtproto_secret(
+                        str(item.get("mtproto_secret") or ""),
+                        str(item.get("mtproto_link") or item.get("tg_mtproto") or item.get("tg_mtproto_link") or ""),
+                    )
+                    if allow_mtproto
+                    else None
+                ),
                 traffic_in_bytes=int(item.get("traffic_in_bytes", 0)),
                 traffic_out_bytes=int(item.get("traffic_out_bytes", 0)),
                 traffic_bytes=int(item.get("traffic_bytes", 0)),
