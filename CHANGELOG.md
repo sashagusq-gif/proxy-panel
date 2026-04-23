@@ -5,5 +5,5 @@
 - Preserve MTProto secrets on restore, so existing `tg://proxy` links remain valid after backup recovery.
 - Fix 3proxy credentials rendering for passwords with special characters (including `$`), preventing proxy startup failures.
 - Improve installer safety:
-  - default SSL/Caddy choice switched to `no` when domain is set;
+  - installer runs in HTTP mode for panel UI and does not manage TLS termination;
   - explicit host port availability checks before starting Docker stack with clear error messages.

@@ -45,23 +45,6 @@ prompt_port() {
   done
 }
 
-prompt_yes_no() {
-  local message="$1"
-  local default_value="$2"
-  local answer
-  while true; do
-    read -r -p "${message} [${default_value}]: " answer
-    if [[ -z "${answer}" ]]; then
-      answer="${default_value}"
-    fi
-    case "${answer}" in
-      y|Y|yes|YES|Yes) echo "yes"; return 0 ;;
-      n|N|no|NO|No) echo "no"; return 0 ;;
-      *) echo "Please answer yes or no." ;;
-    esac
-  done
-}
-
 is_valid_port() {
   local value="$1"
   [[ "${value}" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 65535 ))
@@ -165,12 +148,8 @@ while contains_newline "${ADMIN_PASSWORD}"; do
   fi
 done
 
-PANEL_DOMAIN_RAW="$(prompt_text "Panel domain for HTTPS (empty = no HTTPS)" "")"
+PANEL_DOMAIN_RAW="$(prompt_text "Panel domain for public links (required for MTProto faketls)" "")"
 PANEL_DOMAIN="$(sanitize_domain "${PANEL_DOMAIN_RAW}")"
-USE_SSL="no"
-if [[ -n "${PANEL_DOMAIN}" ]]; then
-  USE_SSL="$(prompt_yes_no "Issue SSL certificate via Caddy? (yes/no)" "no")"
-fi
 
 PROXY_PUBLIC_HOST="auto"
 if [[ -n "${PANEL_DOMAIN}" ]]; then
@@ -219,10 +198,6 @@ assert_port_free "${PANEL_PORT}" "Panel"
 assert_port_free "${HTTP_PROXY_PORT}" "HTTP proxy"
 assert_port_free "${SOCKS_PROXY_PORT}" "SOCKS5 proxy"
 assert_port_free "${MTPROTO_PUBLIC_PORT}" "MTProto"
-if [[ "${USE_SSL}" == "yes" && -n "${PANEL_DOMAIN}" ]]; then
-  assert_port_free "80" "Caddy HTTP"
-  assert_port_free "443" "Caddy HTTPS"
-fi
 
 echo "Installing system dependencies..."
 apt-get update -y
@@ -294,24 +269,9 @@ open_port_best_effort "${PANEL_PORT}"
 open_port_best_effort "${HTTP_PROXY_PORT}"
 open_port_best_effort "${SOCKS_PROXY_PORT}"
 open_port_best_effort "${MTPROTO_PUBLIC_PORT}"
-if [[ "${USE_SSL}" == "yes" && -n "${PANEL_DOMAIN}" ]]; then
-  open_port_best_effort "80"
-  open_port_best_effort "443"
-fi
 
 echo "Starting stack..."
-if [[ "${USE_SSL}" == "yes" && -n "${PANEL_DOMAIN}" ]]; then
-  mkdir -p "${INSTALL_DIR}/deploy"
-  cat >"${INSTALL_DIR}/deploy/Caddyfile" <<EOF
-${PANEL_DOMAIN} {
-  encode gzip
-  reverse_proxy backend:8000
-}
-EOF
-  docker compose -f "${INSTALL_DIR}/docker-compose.yml" --env-file "${INSTALL_DIR}/.env" --profile ssl up -d --build
-else
-  docker compose -f "${INSTALL_DIR}/docker-compose.yml" --env-file "${INSTALL_DIR}/.env" up -d --build
-fi
+docker compose -f "${INSTALL_DIR}/docker-compose.yml" --env-file "${INSTALL_DIR}/.env" up -d --build
 
 sleep 2
 LOGIN_HTTP_CODE="$(curl -s -o /tmp/panel-login-check.txt -w "%{http_code}" -X POST "http://127.0.0.1:${PANEL_PORT}/api/auth/login" -H "Content-Type: application/json" -d "{\"username\":\"${ADMIN_USERNAME}\",\"password\":\"${ADMIN_PASSWORD}\"}" || true)"
@@ -323,25 +283,9 @@ else
   echo "Login self-check: OK"
 fi
 
-if [[ "${USE_SSL}" == "yes" && -n "${PANEL_DOMAIN}" ]]; then
-  HTTPS_CODE="$(curl -s -o /tmp/panel-https-check.txt -w "%{http_code}" "https://${PANEL_DOMAIN}/health" || true)"
-  if [[ "${HTTPS_CODE}" != "200" ]]; then
-    echo "WARNING: HTTPS self-check failed with HTTP ${HTTPS_CODE}."
-    echo "Possible reasons: DNS not pointed yet, ports 80/443 blocked, Cloudflare proxy mode."
-    echo "Recent caddy logs:"
-    docker compose -f "${INSTALL_DIR}/docker-compose.yml" --env-file "${INSTALL_DIR}/.env" logs --tail=80 caddy || true
-  else
-    echo "HTTPS self-check: OK"
-  fi
-fi
-
 echo
 echo "== Installed successfully =="
-if [[ "${USE_SSL}" == "yes" && -n "${PANEL_DOMAIN}" ]]; then
-  echo "Panel URL: https://${PANEL_DOMAIN}"
-else
-  echo "Panel URL: http://<server-ip>:${PANEL_PORT}"
-fi
+echo "Panel URL: http://<server-ip>:${PANEL_PORT}"
 echo "Admin username: ${ADMIN_USERNAME}"
 echo "Admin password: ${ADMIN_PASSWORD}"
 echo "HTTP proxy port: ${HTTP_PROXY_PORT}"
@@ -351,6 +295,3 @@ echo "MTProto host: ${MTPROTO_PUBLIC_HOST}"
 echo "MTProto port: ${MTPROTO_PUBLIC_PORT}"
 echo
 echo "Saved credentials/env file: ${INSTALL_DIR}/.env"
-if [[ "${USE_SSL}" == "yes" && -n "${PANEL_DOMAIN}" ]]; then
-  echo "If HTTPS is not available yet, check DNS A record for ${PANEL_DOMAIN} and open ports 80/443."
-fi

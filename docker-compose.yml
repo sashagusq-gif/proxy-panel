@@ -142,26 +142,8 @@ services:
     networks:
       - proxy_internal
 
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    profiles: ["ssl"]
-    depends_on:
-      - backend
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    networks:
-      - proxy_internal
-
 volumes:
   proxy_conf:
   proxy_logs:
   mtproto_conf:
   singbox_conf:
-  caddy_data:
-  caddy_config:
